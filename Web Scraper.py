@@ -1,137 +1,111 @@
 import requests
+import bs4
 from bs4 import BeautifulSoup
 from ebooklib import epub
 
 # Global
-currentBookTitle = ""
-currentBookNumber = 0
+currentArcTitle = ""
+currentArcNumber = -1
 book, extras = None, None
+arcs = []
+arcs_titles = []
 spine = ["nav"]
-book1, book2, book3, book4, book5, book6, book7 = [], [], [], [], [], [], [] # Table of Contents subsections
 x = 0
+
+
+def main():
+    print("Scraping...")
+    global book, currentArcTitle, currentArcNumber, arcs_titles
+    initializeEpubMetadata()
+    # Access Table of Contents
+    URLTableOfContents = "https://palewebserial.wordpress.com/table-of-contents/"
+    page = requests.get(URLTableOfContents)
+
+    soup = BeautifulSoup(page.content, "html.parser")  # Table of Contents
+
+    entryResults = soup.find("div", class_="entry-content")
+
+    for child in entryResults.find_all(recursive=False):
+        # # if child contains <p style="padding-left: 40px;">, then it's an arc title
+        if child.name == 'p':
+            if child.get('style') is None:
+                currentArcTitle = child.text
+                arcs_titles.append(currentArcTitle)
+                currentArcNumber += 1
+            else:
+                iterateChapters(child)
+    generateBook()
+    print("Epub file has been generated!")
+
 
 def initializeEpubMetadata():
     global book
     book = epub.EpubBook()
-    book.set_title("A Practical Guide To Evil")
-    book.set_cover(content="APGTE_front.png", file_name="APGTE_front.png")
-    book.add_author("ErraticErrata")
+    book.set_title("Pale")
+    book.add_author("Wildbow")
 
-def main():
-    # Load text file containing the extra chapter titles
-    global extras
-    extras_file = open("Extra Chapters.txt", 'r')
-    data = extras_file.read()
-    extras = data.split("\n")
 
-    print("Press ENTER to begin book scraping of A Practical Guide To Evil.", end=" ")
-    input()
-
-    global book, currentBookTitle, currentBookNumber
-    initializeEpubMetadata()
-    # Access Table of Contents
-    URLTableOfContents = "https://practicalguidetoevil.wordpress.com/table-of-contents/"
-    page = requests.get(URLTableOfContents)
-
-    soup = BeautifulSoup(page.content, "html.parser") # Table of Contents
-    
-    entryResults = soup.find("div", class_="entry-content")
-
-    for child in entryResults.find_all(recursive=False):
-        if child.name == 'h2': # Book Number
-            currentBookNumber += 1
-            currentBookTitle = child.text + " — "
-        elif child.name == 'ul': # Get all chapters of a Book Number, then extract content each
-            iterateChapters(child)
-    
-    generateBook()
-    print("Epub file has been generated!")
-    
-"""
-    On a given book number, get information about each chapters.
-"""
 def iterateChapters(chapters):
-    chaptersSoup = BeautifulSoup(str(chapters), "html.parser") # Contains a list (not the Python kind of list) of chapters of a given book number
+    chaptersSoup = BeautifulSoup(str(chapters),
+                                 "html.parser")  # Contains a list (not the Python kind of list) of chapters of a given book number
+    titles = []
+    for br in chaptersSoup.find_all("br"):
+        chapter_title = br.previous_sibling
+        if type(chapter_title) == bs4.element.Tag:
+            chapter_title = chapter_title.text
+        titles.append(clean_title(chapter_title))
 
-    for chapter in chaptersSoup.find_all("li"):
-        if (not chapter.string): # Book 2 has an extra empty CSS tag as the first list element, filter it out
-            continue
-        
-        chapterSoup = BeautifulSoup(str(chapter), "html.parser")
-        currentChapterTitle = currentBookTitle + chapterSoup.find('a').text # Get Chapter Title
-        url = chapterSoup.find('a')['href'] # Get URL of Chapter
-        extractChapter(url, currentChapterTitle) # Extract content
-        
-def extractChapter(url, currentChapterTitle):
+    for i, chapter in enumerate(chaptersSoup.find_all("a")):
+        chapter_title = clean_title(chapter.text) + " - " + titles[i]
+        chapter_url = chapter.get('href')
+        extractChapter(chapter_title, chapter_url)
+
+
+def extractChapter(title, url):
     global book, extras, x
-    chapterPage = requests.get(url) # Visit the Chapter page
-    chapterSoup = BeautifulSoup(chapterPage.content, "html.parser") # Chapter page HTML content
- 
-    # Get information on the succeeding chapter to identify an 'Extra' chapter
-    if x == 317:
-        nextChapterText = 'Peregrine I'
-        nextChapterLink = 'https://practicalguidetoevil.wordpress.com/2018/12/03/peregrine-i/'
-    elif x == 462:
-        nextChapterText = 'Winter IV'
-        nextChapterLink = 'https://practicalguidetoevil.wordpress.com/2020/01/06/winter-iv/'
-    else:
-        nextChapterInfo = chapterSoup.find("div", class_="nav-next").findChild("a", recursive=True)
-        nextChapterText = next(nextChapterInfo.stripped_strings)
-        nextChapterLink = nextChapterInfo['href']
+    chapterPage = requests.get(url)
+    chapterSoup = BeautifulSoup(chapterPage.content, "html.parser")
+    content = chapterSoup.find("div", class_="entry-content")  # Chapter main text body
+    for s in chapterSoup.select("div", id="jp-post-flair"): s.extract()  # Remove footer buttons
+    for s in content.find_all("strong"): s.extract()  # Remove next/previous chapter buttons
+    for s in content.find_all("h1"): s.extract()  # Remove title
+    appendChapterToBook(content, title)
 
-    # Proceed to extract the text of the chapter
-    content = chapterSoup.find("div", class_="entry-content") # Chapter main text body
-    for s in chapterSoup.select("div", id="jp-post-flair") : s.extract() # Remove footer buttons
-    appendChapterToBook(content, currentChapterTitle)
 
-    # Determine if an Extra chapter succeeds the current chapter
-    if nextChapterText in extras:
-        print("Extra chapter detected. Appending extra chapter...")
-        extractChapter(nextChapterLink, nextChapterText) # Fancy recursive XD
-
-def appendChapterToBook(content, currentChapterTitle):
-    global x
-    global book, spine, book1, book2, book3, book4, book5, currentBookNumber
-    epubChapter = epub.EpubHtml(title=currentChapterTitle, file_name=str(x) + ".xhtml", lang='en')
-    epubChapter.content = "<h2>" + currentChapterTitle + "</h2>" + str(content).replace('<div class="entry-content">\n', "").replace('\n </div>', "")
-
+def appendChapterToBook(content, title):
+    global book, spine, x, arcs, currentArcNumber
+    epubChapter = epub.EpubHtml(title=title, file_name=str(x) + ".xhtml", lang='en')
+    epubChapter.content = "<h2>" + title + "</h2>" + str(content).replace('<div class="entry-content">\n', "").replace(
+        '\n </div>', "")
     book.add_item(epubChapter)
     spine.append(epubChapter)
-    if currentBookNumber == 1 : book1.append(epubChapter)
-    elif currentBookNumber == 2 : book2.append(epubChapter)
-    elif currentBookNumber == 3 : book3.append(epubChapter)
-    elif currentBookNumber == 4 : book4.append(epubChapter)
-    elif currentBookNumber == 5 : book5.append(epubChapter)
-    elif currentBookNumber == 6 : book6.append(epubChapter)
-    else : book7.append(epubChapter)
-
+    if len(arcs) <= currentArcNumber:
+        arcs.append([])
+    arcs[currentArcNumber].append(epubChapter)
     x += 1
-    print(currentChapterTitle + " OK!")
+    print(title + " OK!")
+
 
 def generateBook():
-    global book, spine, book1, book2, book3, book4, book5
+    global book, arcs, spine, arcs_titles
     print("Generating EPUB file...")
+    toc = []
+    for i, arc in enumerate(arcs):
+        toc.append((epub.Section(arcs_titles[i]), arc))
+    book.toc = tuple(toc)
     book.spine = spine
-    book.toc = (
-             (epub.Section('Book 1'),
-             book1),
-             (epub.Section('Book 2'),
-             book2),
-             (epub.Section('Book 3'),
-             book3),
-             (epub.Section('Book 4'),
-             book4),
-             (epub.Section('Book 5'),
-             book5),
-             (epub.Section('Book 6'),
-             book6),
-             (epub.Section('Book 7'),
-             book7)
-            )
-
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
-    epub.write_epub('A Practical Guide To Evil.epub', book, {})
+    epub.write_epub("Pale.epub", book, {})
 
-if __name__ == "__main__": 
-    main()
+
+def clean_title(text):
+    if text is None:
+        return ""
+    # if text dont contains "-" return it
+    if "–" in text:
+        text = text.split("–")[1]
+    return text.replace(" ", "")
+
+
+main()
