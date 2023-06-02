@@ -43,6 +43,7 @@ def initializeEpubMetadata():
     book = epub.EpubBook()
     book.set_title("Pale")
     book.add_author("Wildbow")
+    book.set_language("en")
 
 
 def iterateChapters(chapters):
